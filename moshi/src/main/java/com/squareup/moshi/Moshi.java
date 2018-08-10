@@ -49,6 +49,7 @@ public final class Moshi {
 
   private final List<JsonAdapter.Factory> factories;
   private final ThreadLocal<List<DeferredAdapter<?>>> reentrantCalls = new ThreadLocal<>();
+  private final ThreadLocal<List<String>> fieldNames = new ThreadLocal<>();
   private final Map<Object, JsonAdapter<?>> adapterCache = new LinkedHashMap<>();
 
   Moshi(Builder builder) {
@@ -90,8 +91,14 @@ public final class Moshi {
   }
 
   @CheckReturnValue
-  @SuppressWarnings("unchecked") // Factories are required to return only matching JsonAdapters.
   public <T> JsonAdapter<T> adapter(Type type, Set<? extends Annotation> annotations) {
+    return adapter(type, annotations, null);
+  }
+
+  @CheckReturnValue
+  @SuppressWarnings("unchecked") // Factories are required to return only matching JsonAdapters.
+  <T> JsonAdapter<T> adapter(Type type, Set<? extends Annotation> annotations,
+      @Nullable String fieldName) {
     if (type == null) {
       throw new NullPointerException("type == null");
     }
@@ -110,6 +117,7 @@ public final class Moshi {
 
     // Short-circuit if this is a reentrant call.
     List<DeferredAdapter<?>> deferredAdapters = reentrantCalls.get();
+    List<String> fieldNames;
     if (deferredAdapters != null) {
       for (int i = 0, size = deferredAdapters.size(); i < size; i++) {
         DeferredAdapter<?> deferredAdapter = deferredAdapters.get(i);
@@ -117,14 +125,21 @@ public final class Moshi {
           return (JsonAdapter<T>) deferredAdapter;
         }
       }
+      fieldNames = this.fieldNames.get();
     } else {
       deferredAdapters = new ArrayList<>();
       reentrantCalls.set(deferredAdapters);
+      fieldNames = new ArrayList<>();
+      this.fieldNames.set(fieldNames);
     }
 
     // Prepare for re-entrant calls, then ask each factory to create a type adapter.
     DeferredAdapter<T> deferredAdapter = new DeferredAdapter<>(cacheKey);
     deferredAdapters.add(deferredAdapter);
+    int lastIndex = deferredAdapters.size() - 1;
+    if (fieldName != null) {
+      fieldNames.add(fieldName);
+    }
     try {
       for (int i = 0, size = factories.size(); i < size; i++) {
         JsonAdapter<T> result = (JsonAdapter<T>) factories.get(i).create(type, annotations, this);
@@ -133,18 +148,44 @@ public final class Moshi {
           synchronized (adapterCache) {
             adapterCache.put(cacheKey, result);
           }
+          // Remove the field name only when we succeed in creating the adapter,
+          // so we have the full stack if we need to catch an exception at the top level.
+          if (fieldName != null) {
+            fieldNames.remove(fieldNames.size() - 1);
+          }
           return result;
         }
       }
+    } catch (RuntimeException e) {
+      if (lastIndex == 0) { // Rewrite the exception at the top level.
+        e = errorWithFields(type, fieldNames, e);
+      }
+      throw e;
     } finally {
-      deferredAdapters.remove(deferredAdapters.size() - 1);
+      deferredAdapters.remove(lastIndex);
       if (deferredAdapters.isEmpty()) {
         reentrantCalls.remove();
+        this.fieldNames.remove();
       }
     }
 
     throw new IllegalArgumentException(
         "No JsonAdapter for " + typeAnnotatedWithAnnotations(type, annotations));
+  }
+
+  static RuntimeException errorWithFields(Type type, List<String> fieldNames, RuntimeException e) {
+    int size = fieldNames.size();
+    if (size == 0) {
+      return e;
+    }
+    StringBuilder stringBuilder = new StringBuilder("Error creating adapter for field ")
+        .append(Types.getRawType(type).getName());
+    for (int i = 0; i < size; i++) {
+      stringBuilder
+          .append('.')
+          .append(fieldNames.get(i));
+    }
+    return new IllegalArgumentException(stringBuilder.toString(), e);
   }
 
   @CheckReturnValue

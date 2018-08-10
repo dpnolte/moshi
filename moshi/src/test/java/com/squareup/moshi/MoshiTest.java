@@ -955,6 +955,28 @@ public final class MoshiTest {
     }
   }
 
+  static final class HasPlatformType {
+    ArrayList<String> list;
+
+    static final class AnotherLayer {
+      HasPlatformType field;
+    }
+  }
+
+  @Test public void platformTypeClassFieldThrows() {
+    Moshi moshi = new Moshi.Builder().build();
+    try {
+      moshi.adapter(HasPlatformType.AnotherLayer.class);
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertThat(e).hasMessage("Error creating adapter for field "
+          + "com.squareup.moshi.MoshiTest$HasPlatformType$AnotherLayer.field.list");
+      assertThat(e).hasCauseExactlyInstanceOf(IllegalArgumentException.class);
+      assertThat(e.getCause()).hasMessage("Platform java.util.ArrayList<java.lang.String> "
+          + "(with no annotations) requires explicit JsonAdapter to be registered");
+    }
+  }
+
   @Test public void qualifierWithElementsMayNotBeDirectlyRegistered() throws IOException {
     try {
       new Moshi.Builder()
